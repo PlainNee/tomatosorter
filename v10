@@ -1,0 +1,453 @@
+#include <ESP32Servo.h>
+#include <U8g2lib.h>
+
+#define S0 25
+#define S1 26
+#define S2 33
+#define S3 32
+#define sensorOut 34
+
+#define SERVO_PIN_GREEN 27
+#define SERVO_PIN_ORANGE 13
+#define SERVO_PIN_BACK 14  // Previously SERVO_PIN_RED
+#define SERVO_PIN_AFTER 12
+#define PROXIMITY_SENSOR_PIN 4
+
+#define BUTTON_UP 18
+#define BUTTON_DOWN 19
+#define BUTTON_SELECT 5
+
+Servo myservoGreen;
+Servo myservoOrange;
+Servo myservoBack;  // Previously myservoYellow
+Servo myservoAfter;
+
+
+U8G2_SSD1306_128X64_NONAME_F_HW_I2C u8g2(U8G2_R0, U8X8_PIN_NONE);
+
+const char* menuItems[] = {"Start Sorting", "Statistics"};
+int menuIndex = 0;
+bool isRunning = false;
+
+// Timing variables
+unsigned long previousMillis = 0;
+const long colorCheckInterval = 500;
+unsigned long servoActiveTime = 0;
+bool servoActive = false;
+int activeServo = -1;  // 0=Green, 1=Orange, 2=Red
+
+bool servoAfterActive = false;
+unsigned long servoAfterTime = 0;
+
+// Button debouncing
+unsigned long lastDebounceTime = 0;
+const long debounceInterval = 200;
+
+// Display message timing
+unsigned long messageDisplayTime = 0;
+bool messageActive = false;
+
+// For Statistics Menu
+int statisticsMenuIndex = 0;
+bool inStatisticsMenu = false;
+int countGreen = 0, countOrange = 0, countRed = 0;
+
+bool proximityEnabled = false;
+
+
+bool detectionLock = false;
+unsigned long cooldownStartTime = 0;
+const long cooldownDuration = 800;  // Time to wait after sorting (adjust based on physical setup)
+unsigned long lastObjectDetectionTime = 0;
+const long objectTimeout = 2000;
+
+bool proximityServoActive = false;
+unsigned long proximityServoTime = 0;
+
+
+void setup() {
+  Serial.begin(115200);
+
+  pinMode(S0, OUTPUT);
+  pinMode(S1, OUTPUT);
+  pinMode(S2, OUTPUT);
+  pinMode(S3, OUTPUT);
+  pinMode(sensorOut, INPUT);
+  digitalWrite(S0, HIGH);
+  digitalWrite(S1, LOW);
+  pinMode(PROXIMITY_SENSOR_PIN, INPUT);
+
+
+  pinMode(BUTTON_UP, INPUT_PULLUP);
+  pinMode(BUTTON_DOWN, INPUT_PULLUP);
+  pinMode(BUTTON_SELECT, INPUT_PULLUP);
+
+  myservoGreen.attach(SERVO_PIN_GREEN);
+  myservoGreen.write(90);  // Start closed
+  myservoOrange.attach(SERVO_PIN_ORANGE);
+  myservoOrange.write(90);
+  myservoBack.attach(SERVO_PIN_BACK);
+  myservoBack.write(90);
+  myservoAfter.attach(SERVO_PIN_AFTER);
+  myservoAfter.write(0);
+
+  u8g2.begin();
+  displayMenu();
+
+  Serial.println("Setup complete");
+}
+
+void loop() {
+  unsigned long currentMillis = millis();
+
+  // Handle servo timeout non-blocking
+  if (servoActive && (currentMillis - servoActiveTime >= 1000)) {
+    resetServo(activeServo);
+    servoActive = false;
+  }
+
+  handleProximitySensor(currentMillis);
+
+  if (isRunning) {
+    handleProximitySensor(currentMillis);
+  }
+
+  if (!isRunning && proximityEnabled) {
+    myservoBack.write(90);       // Ensure back servo is closed
+    proximityEnabled = false;    // Disable proximity system
+  }
+
+  if (inStatisticsMenu) {
+    handleStatisticsMenu(currentMillis);
+    return;
+  }
+
+  if (servoAfterActive && (currentMillis - servoAfterTime >= 1000)) {
+  myservoAfter.write(0);  // Close the after-servo
+  servoAfterActive = false;
+  }
+
+  if (!isRunning) {
+    handleMainMenu(currentMillis);
+  } else {
+    handleSorting(currentMillis);
+  }
+
+}
+
+void handleProximitySensor(unsigned long currentMillis) {
+  static int lastProximityState = LOW;
+  int currentProximityState = digitalRead(PROXIMITY_SENSOR_PIN);
+
+  if (!proximityEnabled) {
+    proximityEnabled = true;
+    myservoBack.write(90);  // Ensure starting position
+    return;
+  }
+
+  // Detect rising edge (LOW -> HIGH transition)
+  if (currentProximityState == HIGH && lastProximityState == LOW) {
+    myservoBack.write(20);  // Open back servo
+    proximityServoActive = true;
+    proximityServoTime = currentMillis;
+  }
+  lastProximityState = currentProximityState;
+
+  // Close servo after 500ms
+  if (proximityServoActive && (currentMillis - proximityServoTime >= 150)) {
+    myservoBack.write(90);  // Return to original position
+    proximityServoActive = false;
+  }
+}
+
+void activateServo(String color) {
+  color.trim();
+  color.toLowerCase();
+
+  // Reset both servos first to ensure clean state
+  myservoGreen.write(90);
+  myservoOrange.write(90);
+
+  if (color == "green") {
+    countGreen++;
+    myservoGreen.write(90);
+    activeServo = 0;  // Track green servo for reset
+    Serial.println("Green detected - Green servo activated");
+  } 
+  else if (color == "orange") {
+    countOrange++;
+    myservoOrange.write(90);
+    myservoGreen.write(0);
+    activeServo = 1;  // Track orange servo for reset
+    Serial.println("Orange detected - Orange servo activated");
+  } 
+  else if (color == "red") {
+    countRed++;
+    activeServo = -1;  // No servo to reset for red
+    Serial.println("Red detected - Both servos deactivated");
+    // Explicitly ensure both are closed (redundant but safe)
+    myservoGreen.write(0);
+    myservoOrange.write(0);
+  }
+
+  // Activate after-servo for any valid detection
+  if (color != "unknown") {
+    myservoAfter.write(90);
+    servoAfterActive = true;
+    servoAfterTime = millis();
+  }
+
+  servoActive = true;
+  servoActiveTime = millis();
+}
+
+void handleStatisticsMenu(unsigned long currentMillis) {
+  if (checkButtonPress(BUTTON_UP, currentMillis)) {
+    statisticsMenuIndex = (statisticsMenuIndex - 1 + 3) % 3;
+    displayStatisticsMenu();
+  }
+
+  if (checkButtonPress(BUTTON_DOWN, currentMillis)) {
+    statisticsMenuIndex = (statisticsMenuIndex + 1) % 3;
+    displayStatisticsMenu();
+  }
+
+  if (checkButtonPress(BUTTON_SELECT, currentMillis)) {
+    if (statisticsMenuIndex == 0) {
+      // Show counts
+      u8g2.clearBuffer();
+      u8g2.setFont(u8g2_font_ncenB08_tr);
+      u8g2.drawStr(0, 10, "Sorted this Session:");
+      u8g2.drawStr(0, 25, ("Green: " + String(countGreen)).c_str());
+      u8g2.drawStr(0, 40, ("Orange: " + String(countOrange)).c_str());
+      u8g2.drawStr(0, 55, ("Red: " + String(countRed)).c_str());
+      u8g2.sendBuffer();
+      messageDisplayTime = currentMillis;
+      messageActive = true;
+    } else if (statisticsMenuIndex == 1) {
+      // Reset counts
+      countGreen = 0;
+      countOrange = 0;
+      countRed = 0;
+      showTemporaryMessage("Counts Reset!", 1000);
+    } else if (statisticsMenuIndex == 2) {
+      // Return to main menu
+      inStatisticsMenu = false;
+      displayMenu();
+    }
+  }
+
+  // Auto-return from statistics display
+  if (messageActive && statisticsMenuIndex == 0 && 
+      (currentMillis - messageDisplayTime >= 1000)) {
+    messageActive = false;
+    displayStatisticsMenu();
+  }
+}
+
+void handleMainMenu(unsigned long currentMillis) {
+  if (checkButtonPress(BUTTON_UP, currentMillis)) {
+    menuIndex = (menuIndex - 1 + 2) % 2;
+    displayMenu();
+  }
+
+  if (checkButtonPress(BUTTON_DOWN, currentMillis)) {
+    menuIndex = (menuIndex + 1) % 2;
+    displayMenu();
+  }
+
+  if (checkButtonPress(BUTTON_SELECT, currentMillis)) {
+    if (menuIndex == 0) {
+      // Open back servo temporarily at start
+      myservoBack.write(0);
+      delay(500);
+      myservoBack.write(90);
+      
+      isRunning = true;
+      proximityEnabled = true;  // Enable proximity system
+      showTemporaryMessage("Sorting Started...", 500);
+    } else {
+      inStatisticsMenu = true;
+      statisticsMenuIndex = 0;
+      displayStatisticsMenu();
+    }
+  }
+}
+
+void handleSorting(unsigned long currentMillis) {
+  if (checkButtonPress(BUTTON_SELECT, currentMillis)) {
+    isRunning = false;
+    proximityEnabled = false;  // Disable proximity system
+    myservoBack.write(90);     // Ensure back servo is closed
+    displayMenu();
+    return;
+  }
+
+  // Handle servo timeout and cooldown
+  if (servoActive) {
+    if (currentMillis - servoActiveTime >= 1000) {
+      resetServo(activeServo);
+      servoActive = false;
+      cooldownStartTime = currentMillis;  // Start cooldown after servo reset
+    }
+    else if (currentMillis - lastObjectDetectionTime >= objectTimeout) {
+      // Safety timeout in case object gets stuck
+      resetServo(activeServo);
+      servoActive = false;
+      cooldownStartTime = currentMillis;
+      showTemporaryMessage("Object timeout!", 1000);
+    }
+  }
+
+  // Check if we're ready to detect new objects
+  bool canDetect = !servoActive && 
+                  (currentMillis - cooldownStartTime >= cooldownDuration) && 
+                  !detectionLock;
+
+  if (canDetect && (currentMillis - previousMillis >= colorCheckInterval)) {
+    previousMillis = currentMillis;
+    
+    int redFreq = getColorFrequency(LOW, LOW);
+    int greenFreq = getColorFrequency(HIGH, HIGH);
+    int blueFreq = getColorFrequency(LOW, HIGH);
+
+    // Check if object is present
+    if (redFreq > 1500 && greenFreq > 1500 && blueFreq > 1500) {
+      detectionLock = false;  // Reset lock if no object
+      showTemporaryMessage("No object detected", 500);
+      return;
+    }
+
+    // Only process if we're not already handling an object
+    if (!detectionLock) {
+      detectionLock = true;
+      lastObjectDetectionTime = currentMillis;
+
+      String color = detectColor(redFreq, greenFreq, blueFreq);
+      updateDisplay(color);
+      activateServo(color);
+    }
+  }
+
+  // Update display messages
+  if (messageActive && (currentMillis - messageDisplayTime >= 500)) {
+    messageActive = false;
+    updateDisplay("");  // Clear message
+  }
+}
+
+
+void resetServo(int servoIndex) {
+  switch(servoIndex) {
+    case 0: myservoGreen.write(90); break;
+    case 1: myservoOrange.write(90); break;
+    case 2: myservoBack.write(90); break; // Replace with back logic if used
+
+  }
+  detectionLock = false;  // Release detection lock after servo reset
+}
+
+bool checkButtonPress(int button, unsigned long currentMillis) {
+  if (digitalRead(button) == LOW) {
+    if (currentMillis - lastDebounceTime >= debounceInterval) {
+      lastDebounceTime = currentMillis;
+      return true;
+    }
+  }
+  return false;
+}
+
+void showTemporaryMessage(String message, long duration) {
+  u8g2.clearBuffer();
+  u8g2.setFont(u8g2_font_ncenB08_tr);
+  u8g2.drawStr(0, 30, message.c_str());
+  u8g2.sendBuffer();
+  messageDisplayTime = millis();
+  messageActive = true;
+}
+
+void updateDisplay(String color) {
+  if (messageActive) return;
+
+  u8g2.clearBuffer();
+  u8g2.setFont(u8g2_font_ncenB08_tr);
+  u8g2.drawStr(0, 15, "Sorting...");
+  if (!color.isEmpty()) {
+    u8g2.drawStr(0, 35, ("Color: " + color).c_str());
+  }
+  u8g2.drawStr(0, 55, "Press Select to Return");
+  u8g2.sendBuffer();
+}
+
+void displayMenu() {
+  u8g2.clearBuffer();
+  u8g2.setFont(u8g2_font_ncenB10_tr);
+  u8g2.drawStr(0, 12, "Tomato Sorter");
+
+  u8g2.setFont(u8g2_font_ncenB08_tr);
+  for (int i = 0; i < 2; i++) {
+    if (i == menuIndex) {
+      u8g2.drawStr(0, 30 + (i * 15), ("> " + String(menuItems[i])).c_str());
+    } else {
+      u8g2.drawStr(0, 30 + (i * 15), ("  " + String(menuItems[i])).c_str());
+    }
+  }
+  u8g2.sendBuffer();
+}
+
+void displayStatisticsMenu() {
+  const char* statsItems[] = {"Check Count", "Reset", "Return to Menu"};
+
+  u8g2.clearBuffer();
+  u8g2.setFont(u8g2_font_ncenB08_tr);
+  u8g2.drawStr(0, 12, "Statistics");
+
+  for (int i = 0; i < 3; i++) {
+    if (i == statisticsMenuIndex) {
+      u8g2.drawStr(0, 30 + (i * 15), ("> " + String(statsItems[i])).c_str());
+    } else {
+      u8g2.drawStr(0, 30 + (i * 15), ("  " + String(statsItems[i])).c_str());
+    }
+  }
+  u8g2.sendBuffer();
+}
+
+int getColorFrequency(int s2State, int s3State) {
+  digitalWrite(S2, s2State);
+  digitalWrite(S3, s3State);
+  delay(80);
+  return pulseIn(sensorOut, LOW, 50000);
+}
+
+String detectColor(int red, int green, int blue) {
+  int total = red + green + blue;
+  if (total == 0) return "Unknown";
+
+  float r = red / (float)total;
+  float g = green / (float)total;
+  float b = blue / (float)total;
+
+  Serial.printf("Normalized: R=%.3f, G=%.3f, B=%.3f\n", r, g, b);
+
+  // Detection order matters! Check most distinctive first
+  // 🔴 Red detection
+  if (g > 0.39f && r >= 0.21f && r <= 0.28f && b >= 0.33f && b <= 0.37f) {
+    return "red";
+  }
+
+  // 🟠 Orange detection (updated based on your data)
+  if (r >= 0.21f && r <= 0.27f &&   // 0.217-0.266 from your data
+      g >= 0.34f && g <= 0.39f &&   // 0.341-0.388
+      b >= 0.385f && b <= 0.415f) { // 0.386-0.414
+    return "orange";
+  }
+
+  // 🟢 Green detection
+  if (r >= 0.28f && r <= 0.31f && 
+      g >= 0.32f && g <= 0.37f && 
+      b >= 0.34f && b <= 0.385f) {
+    return "green";
+  }
+
+  return "Unknown";
+}

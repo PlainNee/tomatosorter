@@ -1,0 +1,44 @@
+#define S0 8
+#define S1 9
+#define S2 10
+#define S3 11
+#define sensorOut 12
+
+void setup() {
+  Serial.begin(9600);
+
+  pinMode(S0, OUTPUT);
+  pinMode(S1, OUTPUT);
+  pinMode(S2, OUTPUT);
+  pinMode(S3, OUTPUT);
+  pinMode(sensorOut, INPUT);
+
+  digitalWrite(S0, HIGH);
+  digitalWrite(S1, LOW);
+}
+
+void loop() {
+  int red = getColorFrequency(LOW, LOW);
+  int green = getColorFrequency(HIGH, HIGH);
+  int blue = getColorFrequency(LOW, HIGH);
+
+  int total = red + green + blue;
+  if (total > 0) {
+    float r = red / (float)total;
+    float g = green / (float)total;
+    float b = blue / (float)total;
+
+    Serial.print(r, 3); Serial.print(",");
+    Serial.print(g, 3); Serial.print(",");
+    Serial.println(b, 3);
+  }
+
+  delay(500);
+}
+
+int getColorFrequency(int s2State, int s3State) {
+  digitalWrite(S2, s2State);
+  digitalWrite(S3, s3State);
+  delay(80);
+  return pulseIn(sensorOut, LOW, 50000);
+}

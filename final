@@ -9,7 +9,7 @@
 
 #define SERVO_PIN_GREEN 27
 #define SERVO_PIN_ORANGE 13
-#define SERVO_PIN_BACK 14  // Previously SERVO_PIN_RED
+#define SERVO_PIN_BACK 14 
 #define SERVO_PIN_AFTER 12
 #define PROXIMITY_SENSOR_PIN 4
 
@@ -19,7 +19,7 @@
 
 Servo myservoGreen;
 Servo myservoOrange;
-Servo myservoBack;  // Previously myservoYellow
+Servo myservoBack;
 Servo myservoAfter;
 
 
@@ -83,7 +83,7 @@ void setup() {
   pinMode(BUTTON_SELECT, INPUT_PULLUP);
 
   myservoGreen.attach(SERVO_PIN_GREEN);
-  myservoGreen.write(90);  // Start closed
+  myservoGreen.write(90);
   myservoOrange.attach(SERVO_PIN_ORANGE);
   myservoOrange.write(90);
   myservoBack.attach(SERVO_PIN_BACK);
@@ -113,8 +113,8 @@ void loop() {
   }
 
   if (!isRunning && proximityEnabled) {
-    myservoBack.write(90);       // Ensure back servo is closed
-    proximityEnabled = false;    // Disable proximity system
+    myservoBack.write(90);    
+    proximityEnabled = false;
   }
 
   if (inStatisticsMenu) {
@@ -123,7 +123,7 @@ void loop() {
   }
 
   if (servoAfterActive && (currentMillis - servoAfterTime >= 1000)) {
-  myservoAfter.write(0);  // Close the after-servo
+  myservoAfter.write(0); 
   servoAfterActive = false;
   }
 
@@ -141,7 +141,7 @@ void handleProximitySensor(unsigned long currentMillis) {
 
   if (!proximityEnabled) {
     proximityEnabled = true;
-    myservoBack.write(90);  // Ensure starting position
+    myservoBack.write(90); 
     return;
   }
 
